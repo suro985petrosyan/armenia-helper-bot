@@ -906,6 +906,14 @@ async def try_edit_last_image_from_text(
     elif is_confirmation(text):
         edit_prompt = user_pending_image_edits.get(user.id)
 
+        if not edit_prompt:
+            await update.message.reply_text(
+                "Фото у меня есть 👍 Напишите, что именно изменить, "
+                "например: «улучши фото», «убери фон», "
+                "«сделай мультяшным» или «удали человека»."
+            )
+            return True
+
     if not edit_prompt:
         return False
 
@@ -1076,13 +1084,22 @@ def wants_image_edit(text: str) -> bool:
     normalized = (text or "").lower()
 
     edit_words = (
-        "убери", "удали", "замени", "измени", "отредакт",
-        "улучши фото", "улучши изображ", "сделай фото",
-        "сделай изображ", "добавь", "убрать", "удалить",
-        "заменить", "изменить", "редакт",
+        # Русский
+        "убери", "удали", "замени", "измени", "исправь",
+        "отредакт", "редакт", "улучши", "обработай",
+        "подправь", "сделай лучше", "сделай красив",
+        "сделай ярче", "сделай светлее", "сделай темнее",
+        "сделай мульт", "мультяш", "стилизуй", "стилизация",
+        "измени фон", "замени фон", "убери фон",
+        "добавь", "убрать", "удалить", "заменить",
+        "изменить", "улучшить", "обработать",
+        # English
         "remove", "delete", "replace", "edit", "change",
-        "improve image", "improve photo", "add ",
+        "improve", "enhance", "retouch", "make it",
+        "cartoon", "stylize", "add ",
+        # Armenian
         "հեռացր", "փոխիր", "խմբագր", "ավելացր",
+        "լավացր", "բարելավիր",
     )
 
     return any(word in normalized for word in edit_words)
