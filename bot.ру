@@ -40,6 +40,10 @@ VOICE_TTS_VOICE = os.getenv(
     "VOICE_TTS_VOICE",
     "alloy",
 )
+IMAGE_EDIT_MODEL = os.getenv(
+    "IMAGE_EDIT_MODEL",
+    "gpt-image-2",
+)
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Не найден TELEGRAM_BOT_TOKEN")
@@ -51,9 +55,9 @@ if not DATABASE_URL:
     raise ValueError("Не найден DATABASE_URL")
 
 
-FREE_DAILY_LIMIT = 10
+FREE_DAILY_LIMIT = 20
 PREMIUM_DAILY_LIMIT = 100
-PREMIUM_PRICE_STARS = 299
+PREMIUM_PRICE_STARS = 199
 SUBSCRIPTION_PERIOD_SECONDS = 30 * 24 * 60 * 60
 PAYLOAD_PREFIX = "premium_30d"
 ADMIN_TELEGRAM_ID = 477903556
@@ -371,7 +375,7 @@ async def start(
         "🎙 Можно отправлять голосовые сообщения — "
         "я распознаю речь и отвечу текстом и голосом.\n"
         "🖼 Можно отправлять фото и картинки — "
-        "я проанализирую изображение, текст и скриншоты.\n"
+        "я проанализирую их или отредактирую по вашей просьбе.\n"
         "🔊 Голосовой ответ создаётся искусственным интеллектом.\n\n"
         f"Бесплатно: {FREE_DAILY_LIMIT} "
         "запросов в день.\n"
@@ -886,6 +890,59 @@ async def voice_message(
 
 
 
+def wants_image_edit(text: str) -> bool:
+    normalized = (text or "").lower()
+
+    edit_words = (
+        "убери", "удали", "замени", "измени", "отредакт",
+        "улучши фото", "улучши изображ", "сделай фото",
+        "сделай изображ", "добавь", "убрать", "удалить",
+        "заменить", "изменить", "редакт",
+        "remove", "delete", "replace", "edit", "change",
+        "improve image", "improve photo", "add ",
+        "հեռացր", "փոխիր", "խմբագր", "ավելացր",
+    )
+
+    return any(word in normalized for word in edit_words)
+
+
+async def edit_and_send_image(
+    update: Update,
+    image_bytes: bytes,
+    prompt: str,
+) -> None:
+    if not update.message:
+        return
+
+    image_file = io.BytesIO(image_bytes)
+    image_file.name = "telegram_image.jpg"
+    image_file.seek(0)
+
+    result = await openai_client.images.edit(
+        model=IMAGE_EDIT_MODEL,
+        image=image_file,
+        prompt=prompt,
+        quality="medium",
+        output_format="png",
+    )
+
+    if not result.data or not result.data[0].b64_json:
+        raise RuntimeError("Image API did not return image data")
+
+    edited_bytes = base64.b64decode(
+        result.data[0].b64_json
+    )
+
+    edited_file = io.BytesIO(edited_bytes)
+    edited_file.name = "armenia_helper_edited.png"
+    edited_file.seek(0)
+
+    await update.message.reply_photo(
+        photo=edited_file,
+        caption="🖼 Готово. Изображение отредактировано ИИ.",
+    )
+
+
 async def image_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -953,6 +1010,17 @@ async def image_message(
             "от страны или локального контекста, ориентируйся "
             "на Армению, если пользователь не указал другое."
         )
+
+        if (
+            update.message.caption
+            and wants_image_edit(update.message.caption)
+        ):
+            await edit_and_send_image(
+                update,
+                image_bytes,
+                update.message.caption,
+            )
+            return
 
         request_data = {
             "model": OPENAI_MODEL,
