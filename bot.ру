@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+VOICE_TRANSCRIPTION_MODEL = os.getenv(
+    "VOICE_TRANSCRIPTION_MODEL",
+    "gpt-4o-mini-transcribe",
+)
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Не найден TELEGRAM_BOT_TOKEN")
@@ -603,14 +608,15 @@ async def send_long_message(
         )
 
 
-async def answer_message(
+async def answer_user_text(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    text: str,
 ) -> None:
     if (
         not update.effective_user
+        or not update.effective_chat
         or not update.message
-        or not update.message.text
     ):
         return
 
@@ -650,7 +656,7 @@ async def answer_message(
             "instructions": (
                 ASSISTANT_INSTRUCTIONS
             ),
-            "input": update.message.text,
+            "input": text,
             "reasoning": {
                 "effort": "low",
             },
@@ -702,6 +708,101 @@ async def answer_message(
             "Произошла ошибка. "
             "Попробуйте написать ещё раз "
             "немного позже."
+        )
+
+
+async def answer_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if (
+        not update.message
+        or not update.message.text
+    ):
+        return
+
+    await answer_user_text(
+        update,
+        context,
+        update.message.text,
+    )
+
+
+async def voice_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if (
+        not update.effective_user
+        or not update.effective_chat
+        or not update.message
+    ):
+        return
+
+    media = update.message.voice or update.message.audio
+
+    if not media:
+        return
+
+    duration = getattr(media, "duration", 0) or 0
+
+    if duration > 300:
+        await update.message.reply_text(
+            "Голосовое слишком длинное. "
+            "Пожалуйста, отправьте запись до 5 минут."
+        )
+        return
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING,
+    )
+
+    try:
+        telegram_file = await context.bot.get_file(
+            media.file_id
+        )
+
+        audio_buffer = io.BytesIO()
+        await telegram_file.download_to_memory(
+            out=audio_buffer
+        )
+        audio_buffer.seek(0)
+        audio_buffer.name = "telegram_voice.ogg"
+
+        transcription = (
+            await openai_client.audio.transcriptions.create(
+                model=VOICE_TRANSCRIPTION_MODEL,
+                file=audio_buffer,
+            )
+        )
+
+        transcript = (
+            getattr(transcription, "text", "") or ""
+        ).strip()
+
+        if not transcript:
+            await update.message.reply_text(
+                "Не удалось распознать голосовое. "
+                "Попробуйте записать его ещё раз."
+            )
+            return
+
+        await answer_user_text(
+            update,
+            context,
+            transcript,
+        )
+
+    except Exception as error:
+        logger.exception(
+            "Ошибка при обработке голосового: %s",
+            error,
+        )
+
+        await update.message.reply_text(
+            "Не удалось обработать голосовое. "
+            "Попробуйте ещё раз немного позже."
         )
 
 
@@ -850,6 +951,13 @@ def main() -> None:
         MessageHandler(
             filters.SUCCESSFUL_PAYMENT,
             successful_payment_callback,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.VOICE | filters.AUDIO,
+            voice_message,
         )
     )
 
