@@ -57,6 +57,10 @@ if not DATABASE_URL:
 
 FREE_DAILY_LIMIT = 20
 PREMIUM_DAILY_LIMIT = 100
+FREE_IMAGE_EDIT_DAILY_LIMIT = 1
+PREMIUM_IMAGE_EDIT_DAILY_LIMIT = 10
+FREE_WEB_SEARCH_DAILY_LIMIT = 3
+PREMIUM_WEB_SEARCH_DAILY_LIMIT = 30
 PREMIUM_PRICE_STARS = 199
 SUBSCRIPTION_PERIOD_SECONDS = 30 * 24 * 60 * 60
 PAYLOAD_PREFIX = "premium_30d"
@@ -153,6 +157,8 @@ async def get_user_status(
         UPDATE users
         SET
             daily_count = 0,
+            image_edit_count = 0,
+            web_search_count = 0,
             count_date =
                 (NOW() AT TIME ZONE 'Asia/Yerevan')::date,
             updated_at = NOW()
@@ -226,6 +232,8 @@ async def consume_request(
                     UPDATE users
                     SET
                         daily_count = 0,
+                        image_edit_count = 0,
+                        web_search_count = 0,
                         count_date = $2,
                         updated_at = NOW()
                     WHERE telegram_id = $1
@@ -280,6 +288,102 @@ async def restore_request(
     )
 
 
+async def consume_feature(
+    pool: asyncpg.Pool,
+    user,
+    feature: str,
+) -> tuple[bool, int, int]:
+    await register_user(pool, user)
+
+    if user.id == ADMIN_TELEGRAM_ID:
+        return True, 0, 999999
+
+    if feature not in {"image_edit", "web_search"}:
+        raise ValueError("Неизвестная функция")
+
+    column = (
+        "image_edit_count"
+        if feature == "image_edit"
+        else "web_search_count"
+    )
+
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            row = await connection.fetchrow(
+                f"""
+                SELECT
+                    {column} AS used,
+                    count_date,
+                    COALESCE(
+                        premium_until > NOW(),
+                        FALSE
+                    ) AS is_premium
+                FROM users
+                WHERE telegram_id = $1
+                FOR UPDATE
+                """,
+                user.id,
+            )
+
+            today = await connection.fetchval(
+                """
+                SELECT
+                    (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+                """
+            )
+
+            used = row["used"]
+
+            if row["count_date"] != today:
+                used = 0
+                await connection.execute(
+                    """
+                    UPDATE users
+                    SET
+                        daily_count = 0,
+                        image_edit_count = 0,
+                        web_search_count = 0,
+                        count_date = $2,
+                        updated_at = NOW()
+                    WHERE telegram_id = $1
+                    """,
+                    user.id,
+                    today,
+                )
+
+            if feature == "image_edit":
+                limit = (
+                    PREMIUM_IMAGE_EDIT_DAILY_LIMIT
+                    if row["is_premium"]
+                    else FREE_IMAGE_EDIT_DAILY_LIMIT
+                )
+            else:
+                limit = (
+                    PREMIUM_WEB_SEARCH_DAILY_LIMIT
+                    if row["is_premium"]
+                    else FREE_WEB_SEARCH_DAILY_LIMIT
+                )
+
+            if used >= limit:
+                return False, used, limit
+
+            used += 1
+
+            await connection.execute(
+                f"""
+                UPDATE users
+                SET
+                    {column} = $2,
+                    updated_at = NOW()
+                WHERE telegram_id = $1
+                """,
+                user.id,
+                used,
+            )
+
+            return True, used, limit
+
+
 async def premium_keyboard(
     context: ContextTypes.DEFAULT_TYPE,
     telegram_id: int,
@@ -287,7 +391,8 @@ async def premium_keyboard(
     invoice_link = await context.bot.create_invoice_link(
         title="Armenia Helper Premium",
         description=(
-            "100 запросов в день. "
+            "100 запросов в день, голос, фото, "
+            "расширенные AI-функции. "
             "Автопродление каждые 30 дней."
         ),
         payload=f"{PAYLOAD_PREFIX}:{telegram_id}",
@@ -339,8 +444,10 @@ def status_text(data: dict) -> str:
         "🆓 Тариф: Бесплатный\n"
         f"Использовано сегодня: "
         f"{used} из {FREE_DAILY_LIMIT}\n"
-        f"Premium: {PREMIUM_PRICE_STARS} ⭐ "
-        "за 30 дней"
+        f"Premium: {PREMIUM_PRICE_STARS} ⭐ за 30 дней\n"
+        f"⭐ Premium: {PREMIUM_DAILY_LIMIT} запросов, "
+        f"{PREMIUM_IMAGE_EDIT_DAILY_LIMIT} редактирований фото "
+        "в день и расширенные функции."
     )
 
 
@@ -474,12 +581,17 @@ async def premium_command(
 
     await update.message.reply_text(
         "⭐ Armenia Helper Premium\n\n"
-        f"• {PREMIUM_DAILY_LIMIT} "
-        "запросов каждый день\n"
-        "• Автоматическое продление "
-        "каждые 30 дней\n\n"
-        f"Стоимость: {PREMIUM_PRICE_STARS} "
-        "Telegram Stars.",
+        f"• {PREMIUM_DAILY_LIMIT} запросов каждый день\n"
+        "• 🎙 Голосовые вопросы и голосовые ответы\n"
+        "• 🖼 Анализ фотографий и скриншотов\n"
+        f"• ✨ До {PREMIUM_IMAGE_EDIT_DAILY_LIMIT} "
+        "редактирований изображений в день\n"
+        f"• 🌐 До {PREMIUM_WEB_SEARCH_DAILY_LIMIT} "
+        "актуальных интернет-поисков в день "
+        "(после подключения поиска)\n"
+        "• 🇦🇲 Приоритет информации и сервисов Армении\n"
+        "• Автоматическое продление каждые 30 дней\n\n"
+        f"Стоимость: {PREMIUM_PRICE_STARS} Telegram Stars.",
         reply_markup=keyboard,
     )
 
@@ -1015,6 +1127,29 @@ async def image_message(
             update.message.caption
             and wants_image_edit(update.message.caption)
         ):
+            edit_allowed, edit_used, edit_limit = (
+                await consume_feature(
+                    pool,
+                    user,
+                    "image_edit",
+                )
+            )
+
+            if not edit_allowed:
+                keyboard = await premium_keyboard(
+                    context,
+                    user.id,
+                )
+                await update.message.reply_text(
+                    "Лимит редактирования изображений "
+                    f"на сегодня: {edit_used} из {edit_limit}.\n\n"
+                    "⭐ Premium даёт "
+                    f"{PREMIUM_IMAGE_EDIT_DAILY_LIMIT} "
+                    "редактирований изображений в день.",
+                    reply_markup=keyboard,
+                )
+                return
+
             await edit_and_send_image(
                 update,
                 image_bytes,
@@ -1118,6 +1253,10 @@ async def post_init(
             premium_until TIMESTAMPTZ,
             daily_count INTEGER
                 NOT NULL DEFAULT 0,
+            image_edit_count INTEGER
+                NOT NULL DEFAULT 0,
+            web_search_count INTEGER
+                NOT NULL DEFAULT 0,
             count_date DATE
                 NOT NULL DEFAULT CURRENT_DATE,
             telegram_payment_charge_id TEXT,
@@ -1126,6 +1265,22 @@ async def post_init(
             updated_at TIMESTAMPTZ
                 NOT NULL DEFAULT NOW()
         )
+        """
+    )
+
+    await pool.execute(
+        """
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS image_edit_count INTEGER
+            NOT NULL DEFAULT 0
+        """
+    )
+
+    await pool.execute(
+        """
+        ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS web_search_count INTEGER
+            NOT NULL DEFAULT 0
         """
     )
 
