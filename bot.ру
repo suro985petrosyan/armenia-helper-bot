@@ -31,6 +31,14 @@ VOICE_TRANSCRIPTION_MODEL = os.getenv(
     "VOICE_TRANSCRIPTION_MODEL",
     "gpt-4o-mini-transcribe",
 )
+VOICE_TTS_MODEL = os.getenv(
+    "VOICE_TTS_MODEL",
+    "gpt-4o-mini-tts",
+)
+VOICE_TTS_VOICE = os.getenv(
+    "VOICE_TTS_VOICE",
+    "alloy",
+)
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Не найден TELEGRAM_BOT_TOKEN")
@@ -360,7 +368,8 @@ async def start(
         "Пишите на русском, армянском "
         "или английском языке.\n"
         "🎙 Можно отправлять и голосовые сообщения — "
-        "я распознаю речь и отвечу текстом.\n\n"
+        "я распознаю речь и отвечу текстом и голосом.\n"
+        "🔊 Голосовой ответ создаётся искусственным интеллектом.\n\n"
         f"Бесплатно: {FREE_DAILY_LIMIT} "
         "запросов в день.\n"
         f"Premium: {PREMIUM_DAILY_LIMIT} "
@@ -633,6 +642,7 @@ async def answer_user_text(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     text: str,
+    reply_with_voice: bool = False,
 ) -> None:
     if (
         not update.effective_user
@@ -714,6 +724,24 @@ async def answer_user_text(
             answer,
         )
 
+        if reply_with_voice:
+            try:
+                await send_voice_reply(
+                    update,
+                    answer,
+                )
+            except Exception as voice_error:
+                # Текстовый ответ уже доставлен, поэтому ошибка озвучки
+                # не должна списывать пользователю запрос повторно.
+                logger.exception(
+                    "Ошибка при озвучивании ответа: %s",
+                    voice_error,
+                )
+                await update.message.reply_text(
+                    "Текстовый ответ готов, но сейчас "
+                    "не получилось отправить его голосом."
+                )
+
     except Exception as error:
         await restore_request(
             pool,
@@ -746,6 +774,32 @@ async def answer_message(
         update,
         context,
         update.message.text,
+    )
+
+
+async def send_voice_reply(
+    update: Update,
+    text: str,
+) -> None:
+    if not update.message or not text:
+        return
+
+    # Telegram voice messages удобнее всего отправлять в OGG/Opus.
+    speech = await openai_client.audio.speech.create(
+        model=VOICE_TTS_MODEL,
+        voice=VOICE_TTS_VOICE,
+        input=text,
+        response_format="opus",
+    )
+
+    audio_bytes = speech.content
+    voice_buffer = io.BytesIO(audio_bytes)
+    voice_buffer.name = "armenia_helper_reply.ogg"
+    voice_buffer.seek(0)
+
+    await update.message.reply_voice(
+        voice=voice_buffer,
+        caption="🔊 Голосовой ответ сгенерирован ИИ.",
     )
 
 
@@ -813,6 +867,7 @@ async def voice_message(
             update,
             context,
             transcript,
+            reply_with_voice=True,
         )
 
     except Exception as error:
