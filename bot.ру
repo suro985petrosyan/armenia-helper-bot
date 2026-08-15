@@ -1,3 +1,4 @@
+import base64
 import io
 import logging
 import os
@@ -367,8 +368,10 @@ async def start(
         "из Армении.\n"
         "Пишите на русском, армянском "
         "или английском языке.\n"
-        "🎙 Можно отправлять и голосовые сообщения — "
+        "🎙 Можно отправлять голосовые сообщения — "
         "я распознаю речь и отвечу текстом и голосом.\n"
+        "🖼 Можно отправлять фото и картинки — "
+        "я проанализирую изображение, текст и скриншоты.\n"
         "🔊 Голосовой ответ создаётся искусственным интеллектом.\n\n"
         f"Бесплатно: {FREE_DAILY_LIMIT} "
         "запросов в день.\n"
@@ -882,6 +885,150 @@ async def voice_message(
         )
 
 
+
+async def image_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if (
+        not update.effective_user
+        or not update.effective_chat
+        or not update.message
+        or not update.message.photo
+    ):
+        return
+
+    user = update.effective_user
+    pool = get_pool(context)
+
+    allowed, used, limit = await consume_request(
+        pool,
+        user,
+    )
+
+    if not allowed:
+        keyboard = await premium_keyboard(
+            context,
+            user.id,
+        )
+
+        await update.message.reply_text(
+            f"Лимит закончился: "
+            f"{used} из {limit} "
+            "запросов сегодня.\n\n"
+            f"Premium даёт "
+            f"{PREMIUM_DAILY_LIMIT} "
+            "запросов в день.",
+            reply_markup=keyboard,
+        )
+        return
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.TYPING,
+    )
+
+    try:
+        # Берём самое большое доступное изображение из Telegram.
+        photo = update.message.photo[-1]
+        telegram_file = await context.bot.get_file(
+            photo.file_id
+        )
+
+        image_buffer = io.BytesIO()
+        await telegram_file.download_to_memory(
+            out=image_buffer
+        )
+        image_bytes = image_buffer.getvalue()
+
+        image_b64 = base64.b64encode(
+            image_bytes
+        ).decode("ascii")
+
+        user_prompt = (
+            update.message.caption or
+            "Проанализируй это изображение и объясни, "
+            "что на нём изображено. Если есть текст, "
+            "прочитай и объясни его. Если вопрос зависит "
+            "от страны или локального контекста, ориентируйся "
+            "на Армению, если пользователь не указал другое."
+        )
+
+        request_data = {
+            "model": OPENAI_MODEL,
+            "instructions": ASSISTANT_INSTRUCTIONS,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": user_prompt,
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": (
+                                "data:image/jpeg;base64,"
+                                + image_b64
+                            ),
+                            "detail": "auto",
+                        },
+                    ],
+                }
+            ],
+            "reasoning": {
+                "effort": "low",
+            },
+            "max_output_tokens": 1200,
+        }
+
+        previous_response_id = (
+            user_response_ids.get(user.id)
+        )
+
+        if previous_response_id:
+            request_data[
+                "previous_response_id"
+            ] = previous_response_id
+
+        response = (
+            await openai_client.responses.create(
+                **request_data
+            )
+        )
+
+        user_response_ids[user.id] = response.id
+
+        answer = response.output_text
+
+        if not answer:
+            answer = (
+                "Не удалось проанализировать изображение. "
+                "Попробуйте отправить его ещё раз."
+            )
+
+        await send_long_message(
+            update,
+            answer,
+        )
+
+    except Exception as error:
+        await restore_request(
+            pool,
+            user.id,
+        )
+
+        logger.exception(
+            "Ошибка при обработке изображения: %s",
+            error,
+        )
+
+        await update.message.reply_text(
+            "Не удалось обработать изображение. "
+            "Попробуйте отправить его ещё раз немного позже."
+        )
+
+
 async def post_init(
     application: Application,
 ) -> None:
@@ -1027,6 +1174,13 @@ def main() -> None:
         MessageHandler(
             filters.SUCCESSFUL_PAYMENT,
             successful_payment_callback,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            image_message,
         )
     )
 
