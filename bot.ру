@@ -71,6 +71,8 @@ openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # Память текущего разговора
 user_response_ids: dict[int, str] = {}
+user_last_images: dict[int, bytes] = {}
+user_pending_image_edits: dict[int, str] = {}
 
 
 logging.basicConfig(
@@ -474,25 +476,21 @@ async def start(
     )
 
     await update.message.reply_text(
-        "Здравствуйте! 👋\n\n"
-        "Я умный помощник для пользователей "
-        "из Армении.\n"
-        "Пишите на русском, армянском "
-        "или английском языке.\n"
-        "🎙 Можно отправлять голосовые сообщения — "
-        "я распознаю речь и отвечу текстом и голосом.\n"
-        "🖼 Можно отправлять фото и картинки — "
-        "я проанализирую их или отредактирую по вашей просьбе.\n"
-        "🔊 Голосовой ответ создаётся искусственным интеллектом.\n\n"
-        f"Бесплатно: {FREE_DAILY_LIMIT} "
-        "запросов в день.\n"
-        f"Premium: {PREMIUM_DAILY_LIMIT} "
-        "запросов в день за "
-        f"{PREMIUM_PRICE_STARS} ⭐ в месяц.\n\n"
-        "Команды:\n"
-        "/new — новый разговор\n"
-        "/status — тариф и остаток\n"
-        "/premium — подключить Premium"
+        "🇦🇲 Добро пожаловать в Armenia Helper!\n\n"
+        "Ваш AI-помощник для жизни, работы и повседневных "
+        "задач в Армении.\n\n"
+        "💬 Спросите что угодно — помогу разобраться и решить задачу.\n"
+        "🎙 Отправьте голосовое — пойму речь и отвечу текстом и голосом.\n"
+        "🖼 Пришлите фото или скриншот — проанализирую содержимое.\n"
+        "✨ Попросите изменить фото — верну готовое изображение.\n"
+        "🇷🇺 🇦🇲 🇬🇧 Общайтесь на русском, армянском или английском.\n\n"
+        f"🎁 Каждый день бесплатно — {FREE_DAILY_LIMIT} запросов.\n"
+        f"⭐ Premium за {PREMIUM_PRICE_STARS} Stars / 30 дней: "
+        f"до {PREMIUM_DAILY_LIMIT} запросов в день и больше "
+        "возможностей для фото и AI-функций.\n\n"
+        "Попробуйте прямо сейчас — напишите вопрос, "
+        "отправьте голосовое или фото 👇\n\n"
+        "Команды: /new • /status • /premium"
     )
 
 
@@ -879,6 +877,69 @@ async def answer_user_text(
         )
 
 
+
+def is_confirmation(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    return normalized in {
+        "да", "давай", "сделай", "ок", "окей", "хорошо",
+        "yes", "do it", "այո", "արա",
+    }
+
+
+async def try_edit_last_image_from_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+) -> bool:
+    if not update.effective_user or not update.message:
+        return False
+
+    user = update.effective_user
+    image_bytes = user_last_images.get(user.id)
+    if not image_bytes:
+        return False
+
+    edit_prompt = None
+    if wants_image_edit(text):
+        edit_prompt = text
+        user_pending_image_edits[user.id] = text
+    elif is_confirmation(text):
+        edit_prompt = user_pending_image_edits.get(user.id)
+
+    if not edit_prompt:
+        return False
+
+    pool = get_pool(context)
+    allowed, used, limit = await consume_feature(
+        pool, user, "image_edit"
+    )
+
+    if not allowed:
+        keyboard = await premium_keyboard(context, user.id)
+        await update.message.reply_text(
+            f"Лимит редактирования фото: {used} из {limit} сегодня.\\n\\n"
+            f"⭐ Premium даёт до {PREMIUM_IMAGE_EDIT_DAILY_LIMIT} "
+            "редактирований изображений в день.",
+            reply_markup=keyboard,
+        )
+        return True
+
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.UPLOAD_PHOTO,
+    )
+
+    try:
+        await edit_and_send_image(update, image_bytes, edit_prompt)
+        user_pending_image_edits.pop(user.id, None)
+    except Exception as error:
+        logger.exception("Ошибка редактирования последнего фото: %s", error)
+        await update.message.reply_text(
+            "Не получилось отредактировать фото. Попробуйте ещё раз."
+        )
+    return True
+
+
 async def answer_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -889,10 +950,19 @@ async def answer_message(
     ):
         return
 
+    text = update.message.text
+
+    if await try_edit_last_image_from_text(
+        update,
+        context,
+        text,
+    ):
+        return
+
     await answer_user_text(
         update,
         context,
-        update.message.text,
+        text,
     )
 
 
@@ -1109,6 +1179,7 @@ async def image_message(
             out=image_buffer
         )
         image_bytes = image_buffer.getvalue()
+        user_last_images[user.id] = image_bytes
 
         image_b64 = base64.b64encode(
             image_bytes
@@ -1155,6 +1226,7 @@ async def image_message(
                 image_bytes,
                 update.message.caption,
             )
+            user_pending_image_edits.pop(user.id, None)
             return
 
         request_data = {
