@@ -61,8 +61,8 @@ FREE_DAILY_LIMIT = 20
 PREMIUM_DAILY_LIMIT = 100
 FREE_IMAGE_EDIT_DAILY_LIMIT = 1
 PREMIUM_IMAGE_EDIT_DAILY_LIMIT = 10
-FREE_WEB_SEARCH_DAILY_LIMIT = 3
-PREMIUM_WEB_SEARCH_DAILY_LIMIT = 30
+FREE_WEB_SEARCH_DAILY_LIMIT = 2
+PREMIUM_WEB_SEARCH_DAILY_LIMIT = 10
 PREMIUM_PRICE_STARS = 199
 SUBSCRIPTION_PERIOD_SECONDS = 30 * 24 * 60 * 60
 PAYLOAD_PREFIX = "premium_30d"
@@ -935,21 +935,19 @@ def needs_web_search(text: str) -> bool:
         "мероприят", "афиша", "рейс", "билет", "расписание",
         "закон", "штраф", "налог", "правила", "банк", "ставка",
         "в наличии", "доставка", "ресторан", "кафе", "отель",
+        "кто сейчас", "на данный момент", "официальный сайт",
         "today", "now", "latest", "news", "weather", "price",
         "exchange rate", "find", "search", "open now",
         "այսօր", "հիմա", "վերջին", "նորություններ", "եղանակ",
         "գին", "արժեք", "գտիր", "փնտրիր",
     )
 
-    armenia_words = (
-        "армени", "ереван", "гюмри", "ванадзор", "дилижан",
-        "цахкадзор", "севан", "армян", "հայաստան", "երևան",
-        "գյումրի", "վանաձոր", "դիլիջան", "ծաղկաձոր", "սևան",
-    )
-
-    return (
-        any(word in normalized for word in live_words)
-        or any(word in normalized for word in armenia_words)
+    # Веб-поиск включаем только когда запрос действительно зависит
+    # от свежей/локальной информации. Простые вопросы об Армении
+    # ("расскажи про Гарни", "что такое хаш") отвечаем без поиска.
+    return any(
+        word in normalized
+        for word in live_words
     )
 
 
