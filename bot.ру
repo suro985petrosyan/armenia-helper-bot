@@ -563,6 +563,118 @@ async def status_command(
     )
 
 
+async def admin_stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if (
+        not update.effective_user
+        or not update.message
+    ):
+        return
+
+    if update.effective_user.id != ADMIN_TELEGRAM_ID:
+        await update.message.reply_text(
+            "Эта команда доступна только администратору."
+        )
+        return
+
+    pool = get_pool(context)
+
+    stats = await pool.fetchrow(
+        """
+        SELECT
+            COUNT(*) AS total_users,
+            COUNT(*) FILTER (
+                WHERE premium_until > NOW()
+            ) AS premium_users,
+            COUNT(*) FILTER (
+                WHERE (
+                    updated_at AT TIME ZONE 'Asia/Yerevan'
+                )::date =
+                (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+            ) AS active_today,
+            COUNT(*) FILTER (
+                WHERE (
+                    created_at AT TIME ZONE 'Asia/Yerevan'
+                )::date =
+                (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+            ) AS new_today,
+            COALESCE(
+                SUM(daily_count) FILTER (
+                    WHERE count_date =
+                    (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+                ),
+                0
+            ) AS requests_today,
+            COALESCE(
+                SUM(image_edit_count) FILTER (
+                    WHERE count_date =
+                    (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+                ),
+                0
+            ) AS image_edits_today,
+            COALESCE(
+                SUM(web_search_count) FILTER (
+                    WHERE count_date =
+                    (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+                ),
+                0
+            ) AS web_searches_today
+        FROM users
+        """
+    )
+
+    payment_stats = await pool.fetchrow(
+        """
+        SELECT
+            COUNT(*) AS payments_total,
+            COALESCE(SUM(amount), 0) AS stars_total,
+            COUNT(*) FILTER (
+                WHERE (
+                    paid_at AT TIME ZONE 'Asia/Yerevan'
+                )::date =
+                (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+            ) AS payments_today,
+            COALESCE(
+                SUM(amount) FILTER (
+                    WHERE (
+                        paid_at AT TIME ZONE 'Asia/Yerevan'
+                    )::date =
+                    (NOW() AT TIME ZONE 'Asia/Yerevan')::date
+                ),
+                0
+            ) AS stars_today
+        FROM payments
+        """
+    )
+
+    total_users = stats["total_users"] or 0
+    premium_users = stats["premium_users"] or 0
+
+    conversion = (
+        premium_users / total_users * 100
+        if total_users
+        else 0
+    )
+
+    await update.message.reply_text(
+        "📊 JAN AI — статистика\n\n"
+        f"👥 Всего пользователей: {total_users}\n"
+        f"🟢 Активны сегодня: {stats['active_today']}\n"
+        f"🆕 Новых сегодня: {stats['new_today']}\n"
+        f"⭐ Premium сейчас: {premium_users}\n"
+        f"📈 Конверсия в Premium: {conversion:.1f}%\n\n"
+        f"💬 Запросов сегодня: {stats['requests_today']}\n"
+        f"🖼 Редактирований фото: {stats['image_edits_today']}\n"
+        f"🌐 Интернет-поисков: {stats['web_searches_today']}\n\n"
+        f"💳 Оплат сегодня: {payment_stats['payments_today']}\n"
+        f"⭐ Stars сегодня: {payment_stats['stars_today']}\n"
+        f"💳 Оплат всего: {payment_stats['payments_total']}\n"
+        f"⭐ Stars всего: {payment_stats['stars_total']}"
+    )
+
+
 async def premium_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1506,6 +1618,10 @@ async def post_init(
                 "premium",
                 "Подключить Premium",
             ),
+            BotCommand(
+                "adminstats",
+                "Статистика бота",
+            ),
         ]
     )
 
@@ -1563,6 +1679,13 @@ def main() -> None:
         CommandHandler(
             "status",
             status_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "adminstats",
+            admin_stats_command,
         )
     )
 
