@@ -3,6 +3,7 @@ import io
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import asyncpg
 from openai import AsyncOpenAI
@@ -67,6 +68,7 @@ SUBSCRIPTION_PERIOD_SECONDS = 30 * 24 * 60 * 60
 PAYLOAD_PREFIX = "premium_30d"
 ADMIN_TELEGRAM_ID = 477903556
 ARMENIA_TIME = timezone(timedelta(hours=4))
+WELCOME_IMAGE_PATH = Path(__file__).with_name("jan_ai_welcome_v2.png")
 
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -118,7 +120,17 @@ ASSISTANT_INSTRUCTIONS = """
 
 Определи язык пользователя и отвечай на том же языке.
 Пиши понятно, доброжелательно и без лишней воды.
-Если не уверен в информации, честно сообщи об этом.
+
+Правило действий:
+- если пользователь дал понятную команду, выполняй её сразу без лишних уточняющих вопросов и без запроса подтверждения;
+- не спрашивай «точно?», «хотите, чтобы я...?», «какой вариант выбрать?» и подобные вещи, если можно разумно выбрать вариант самому;
+- если деталей не хватает, но можно безопасно сделать разумное предположение, сделай его и продолжай;
+- для фото и изображений: если пользователь пишет «улучши», «сделай красивее», «сделай мультяшным», «убери фон», «замени фон», «удали объект» и т.п., сразу выполняй редактирование последнего изображения;
+- если запрос на редактирование изображения общий, используй качественный естественный результат по умолчанию, сохраняя лица, пропорции и важные детали;
+- уточняй только тогда, когда без ответа пользователя действие действительно невозможно, есть несколько принципиально разных вариантов с серьёзными последствиями или запрос касается чувствительной/рискованной темы;
+- не рассказывай пользователю, как самому выполнить действие, если бот умеет выполнить его сам.
+
+Если не уверен в фактах, честно сообщи об этом.
 Не обещай выполнить действия, которые не можешь выполнить.
 """
 
@@ -479,7 +491,9 @@ def main_menu_keyboard(
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
-        is_persistent=True,
+        one_time_keyboard=True,
+        is_persistent=False,
+        input_field_placeholder="Напишите сообщение или откройте меню",
     )
 
 
@@ -508,6 +522,19 @@ async def start(
     is_admin = (
         update.effective_user.id == ADMIN_TELEGRAM_ID
     )
+
+    if WELCOME_IMAGE_PATH.exists():
+        try:
+            with WELCOME_IMAGE_PATH.open("rb") as welcome_image:
+                await update.message.reply_photo(
+                    photo=welcome_image,
+                    caption="🇦🇲 JAN AI — твой AI-помощник по Армении",
+                )
+        except Exception as error:
+            logger.exception(
+                "Не удалось отправить приветственное изображение: %s",
+                error,
+            )
 
     await update.message.reply_text(
         "🇦🇲 Добро пожаловать в JAN AI!\n\n"
@@ -1412,10 +1439,18 @@ async def edit_and_send_image(
     image_file.name = "telegram_image.jpg"
     image_file.seek(0)
 
+    edit_prompt = (
+        prompt.strip()
+        + "\n\nВыполни команду сразу. Не задавай уточняющих вопросов. "
+        "Если детали не указаны, выбери наиболее естественный и качественный "
+        "вариант. Сохраняй узнаваемость лиц, правильные пропорции и важные "
+        "детали исходного изображения, если пользователь не просит изменить их."
+    )
+
     result = await openai_client.images.edit(
         model=IMAGE_EDIT_MODEL,
         image=image_file,
-        prompt=prompt,
+        prompt=edit_prompt,
         quality="medium",
         output_format="png",
     )
