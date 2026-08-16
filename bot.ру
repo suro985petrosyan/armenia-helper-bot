@@ -1471,6 +1471,10 @@ async def edit_and_send_image(
         caption="🖼 Готово. Изображение отредактировано ИИ.",
     )
 
+    # Результат становится новым активным фото для следующего редактирования.
+    if update.effective_user:
+        user_last_images[update.effective_user.id] = edited_bytes
+
 
 async def image_message(
     update: Update,
