@@ -10,6 +10,7 @@ from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
     LabeledPrice,
     Update,
 )
@@ -463,6 +464,25 @@ def status_text(data: dict) -> str:
     )
 
 
+def main_menu_keyboard(
+    is_admin: bool = False,
+) -> ReplyKeyboardMarkup:
+    rows = [
+        ["💬 Спросить JAN AI", "🎙 Голосовой помощник"],
+        ["🖼 Фото и AI", "🌐 Поиск по Армении"],
+        ["⭐ Premium", "👤 Мой тариф"],
+    ]
+
+    if is_admin:
+        rows.append(["📊 Админ-панель"])
+
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -485,24 +505,23 @@ async def start(
         None,
     )
 
+    is_admin = (
+        update.effective_user.id == ADMIN_TELEGRAM_ID
+    )
+
     await update.message.reply_text(
-        "🇦🇲 Добро пожаловать в Armenia Helper!\n\n"
+        "🇦🇲 Добро пожаловать в JAN AI!\n\n"
         "Ваш AI-помощник для жизни, работы и повседневных "
         "задач в Армении.\n\n"
-        "💬 Спросите что угодно — помогу разобраться и решить задачу.\n"
-        "🎙 Отправьте голосовое — пойму речь и отвечу текстом и голосом.\n"
-        "🖼 Пришлите фото или скриншот — проанализирую содержимое.\n"
-        "✨ Попросите изменить фото — верну готовое изображение.\n"
-        "🌐 Ищу актуальную информацию в интернете с приоритетом Армении.\n"
-        "😄 Отвечаю по делу, но почти всегда с лёгким армянским юмором.\n"
-        "🇷🇺 🇦🇲 🇬🇧 Общайтесь на русском, армянском или английском.\n\n"
-        f"🎁 Каждый день бесплатно — {FREE_DAILY_LIMIT} запросов.\n"
-        f"⭐ Premium за {PREMIUM_PRICE_STARS} Stars / 30 дней: "
-        f"до {PREMIUM_DAILY_LIMIT} запросов в день и больше "
-        "возможностей для фото и AI-функций.\n\n"
-        "Попробуйте прямо сейчас — напишите вопрос, "
-        "отправьте голосовое или фото 👇\n\n"
-        "Команды: /new • /status • /premium"
+        "💬 Задавайте вопросы\n"
+        "🎙 Общайтесь голосом\n"
+        "🖼 Анализируйте и редактируйте фото\n"
+        "🌐 Ищите актуальную информацию по Армении\n"
+        "😄 И всё это — с лёгким армянским юмором\n\n"
+        f"🎁 Бесплатно: {FREE_DAILY_LIMIT} запросов в день\n"
+        f"⭐ Premium: {PREMIUM_PRICE_STARS} Stars / 30 дней\n\n"
+        "Выберите раздел в меню ниже 👇",
+        reply_markup=main_menu_keyboard(is_admin),
     )
 
 
@@ -1157,6 +1176,67 @@ async def try_edit_last_image_from_text(
     return True
 
 
+async def handle_menu_button(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    if (
+        not update.effective_user
+        or not update.message
+        or not update.message.text
+    ):
+        return False
+
+    text = update.message.text.strip()
+
+    if text == "💬 Спросить JAN AI":
+        await update.message.reply_text(
+            "💬 Просто напишите вопрос. "
+            "Можете спросить про Армению, работу, бизнес, "
+            "идеи, переводы или повседневные задачи."
+        )
+        return True
+
+    if text == "🎙 Голосовой помощник":
+        await update.message.reply_text(
+            "🎙 Отправьте голосовое сообщение. "
+            "Я распознаю речь и отвечу текстом и голосом. "
+            "Говорите свободно — JAN AI не просит дикторский диплом 😄"
+        )
+        return True
+
+    if text == "🖼 Фото и AI":
+        await update.message.reply_text(
+            "🖼 Отправьте фото или скриншот.\\n\\n"
+            "Можно написать: «что здесь?», «переведи текст», "
+            "«улучши фото», «убери объект», «замени фон» "
+            "или «сделай мультяшным»."
+        )
+        return True
+
+    if text == "🌐 Поиск по Армении":
+        await update.message.reply_text(
+            "🌐 Спросите про актуальную информацию в Армении: "
+            "погоду, цены, рестораны, услуги, события, "
+            "магазины, адреса, курсы валют и многое другое."
+        )
+        return True
+
+    if text == "⭐ Premium":
+        await premium_command(update, context)
+        return True
+
+    if text == "👤 Мой тариф":
+        await status_command(update, context)
+        return True
+
+    if text == "📊 Админ-панель":
+        await admin_stats_command(update, context)
+        return True
+
+    return False
+
+
 async def answer_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1168,6 +1248,12 @@ async def answer_message(
         return
 
     text = update.message.text
+
+    if await handle_menu_button(
+        update,
+        context,
+    ):
+        return
 
     if await try_edit_last_image_from_text(
         update,
